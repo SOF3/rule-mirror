@@ -1,0 +1,23 @@
+[package]
+name = "rule-mirror"
+version = "0.1.0"
+authors = ["SOFe <sofe2038@gmail.com>"]
+edition = "2018"
+license = "AGPL-3.0"
+repository = "https://github.com/SOF3/rule-mirror"
+homepage = "https://github.com/SOF3/rule-mirror"
+readme = "README.md"
+description = "A Discord bot that mirrors a file on GitHub to messages on a Discord channel"
+
+[dependencies]
+comrak = "0.6.2"
+config = "0.9.3"
+diesel = {version = "1.4.3", features = ["postgres", "r2d2"]}
+dirmod = {version = "0.2.0", git = "https://github.com/SOF3/dirmod"}
+getset = "0.0.9"
+log = "0.4.8"
+pretty_env_logger = "0.3.1"
+r2d2 = "0.8.6"
+rocket = {version = "0.4.2", git = "https://github.com/SOF3/Rocket", branch = "v0.4-ring-compat"}
+serde = {version = "1.0.102", features = ["derive"]}
+serenity = "0.6.4"
