@@ -17,7 +17,7 @@ dirmod = "0.2.0-alpha.1"
 getset = "0.0.9"
 log = "0.4.10"
 pretty_env_logger = "0.4.0"
-r2d2 = "0.8.8"
+r2d2 = "0.8.9"
 rocket = {version = "0.4.2", git = "https://github.com/SOF3/Rocket", branch = "v0.4-ring-compat"}
 serde = {version = "1.0.104", features = ["derive"]}
 serenity = "0.6.4"
