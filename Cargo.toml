@@ -12,7 +12,7 @@ description = "A Discord bot that mirrors a file on GitHub to messages on a Disc
 [dependencies]
 comrak = "0.7.0"
 config = "0.10.1"
-diesel = {version = "1.4.3", features = ["postgres", "r2d2"]}
+diesel = {version = "1.4.6", features = ["postgres", "r2d2"]}
 dirmod = "0.2.0-alpha.1"
 getset = "0.0.9"
 log = "0.4.10"
