@@ -10,7 +10,7 @@ readme = "README.md"
 description = "A Discord bot that mirrors a file on GitHub to messages on a Discord channel"
 
 [dependencies]
-comrak = "0.7.0"
+comrak = "0.10.0"
 config = "0.10.1"
 diesel = {version = "1.4.3", features = ["postgres", "r2d2"]}
 dirmod = "0.2.0-alpha.1"
