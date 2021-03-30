@@ -1,9 +1,10 @@
 use std::cmp;
+use std::convert::TryInto;
 use std::future::Future;
 use std::marker::PhantomData;
 
 use anyhow::Context as _;
-use futures::future::FutureExt;
+use futures::future::{self, FutureExt};
 use serenity::model::channel::Message;
 use serenity::model::gateway::{Activity, Ready};
 use serenity::model::id::{ChannelId, MessageId};
@@ -18,10 +19,12 @@ async fn main() -> anyhow::Result<()> {
 
     let secret = common::secret::load().context("Failed loading secret file")?;
 
-    let conn = db::Conn::new(&secret).await.context("Failed initializing database")?;
+    let conn = db::Conn::new(&secret)
+        .await
+        .context("Failed initializing database")?;
 
     let handler = Handler {
-        client_id: secret.discord.client_id,
+        // client_id: secret.discord.client_id,
         prefix1: format!("<@!{}>", secret.discord.client_id),
         prefix2: format!("<@{}>", secret.discord.client_id),
         invite_link: format!(
@@ -48,63 +51,57 @@ impl<T: Send + Sync + 'static> TypeMapKey for Data<T> {
 }
 
 struct Handler {
-    client_id: u64,
+    // client_id: u64,
     prefix1: String,
     prefix2: String,
     invite_link: String,
 }
 
-const MESSAGE_MAX_LENGTH: usize = 2000;
+const MESSAGE_MAX_LENGTH: usize = serenity::constants::MESSAGE_CODE_LIMIT;
 
 #[async_trait::async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, _: Ready) {
-        async fn do_update(update: db::Update, ctx: Context) -> anyhow::Result<()> {
-            let resp = reqwest::get(&update.url)
-                .await
-                .context("Failed to download file")?;
-            let mut text: String = resp.text().await.context("The file is not valid UTF-8")?;
-
-            let max_len = update.message_ids.len() * MESSAGE_MAX_LENGTH;
-            if max_len < text.len() {
-                let err = format!("\u{2026}\nSee <{}> for more", &update.url);
-                text.truncate(max_len - err.len());
-                text += &err;
-            }
-
-            let channel = ChannelId::from(update.channel_id);
-            for (i, message) in update.message_ids.iter().enumerate() {
-                let range =
-                    (MESSAGE_MAX_LENGTH * i)..cmp::min(MESSAGE_MAX_LENGTH * (i + 1), text.len());
-                let slice = text
-                    .get(range)
-                    .unwrap_or("*(message reserved for expansion)*");
-                let message = MessageId::from(*message);
-                let mut message = channel.message(&ctx, message).await?;
-                message.edit(&ctx, |m| m.content(slice)).await?;
-            }
-
-            Ok(())
-        }
-
         ctx.set_activity(Activity::playing("https://github.com/SOF3/blob-mirror"))
             .await;
 
         let mut conn = {
             let data = ctx.data.read().await;
             let secret = data.get::<Data<Secret>>().expect("Secret uninitialized");
-            common::db::subscriber(secret).expect("Failed to initialize database connection")
+            common::db::subscriber::<db::Update>(secret, "updates")
+                .expect("Failed to initialize database connection")
         };
+        {
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                while let Some(update) = conn.recv().await {
+                    tokio::spawn(handle_update(update, ctx.clone()).map(|result| {
+                        if let Err(err) = result {
+                            log::error!("Error dispatching update: {}", err);
+                        }
+                    }));
+                }
+            });
+        }
 
-        tokio::spawn(async move {
-            while let Some(update) = conn.recv().await {
-                tokio::spawn(do_update(update, ctx.clone()).map(|result| {
-                    if let Err(err) = result {
-                        log::error!("Error dispatching update: {}", err);
-                    }
-                }));
-            }
-        });
+        let mut conn = {
+            let data = ctx.data.read().await;
+            let secret = data.get::<Data<Secret>>().expect("Secret uninitialized");
+            common::db::subscriber::<db::OnSeen>(secret, "on_seen")
+                .expect("Failed to initialize database connection")
+        };
+        {
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                while let Some(on_seen) = conn.recv().await {
+                    tokio::spawn(handle_on_seen(on_seen, ctx.clone()).map(|result| {
+                        if let Err(err) = result {
+                            log::error!("Error dispatching on_seen: {}", err);
+                        }
+                    }));
+                }
+            });
+        }
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
@@ -227,8 +224,13 @@ async fn mirror_cmd(
     }
 
     let client = reqwest::Client::new();
-    let gh_repo = client.get(&format!("https://api.github.com/repos/{}/{}", info.user, info.repo))
-        .header("User-Agent", "blob-mirror/v0.1").send()
+    let gh_repo = client
+        .get(&format!(
+            "https://api.github.com/repos/{}/{}",
+            info.user, info.repo
+        ))
+        .header("User-Agent", "blob-mirror/v0.1")
+        .send()
         .await
         .context("Failed to lookup repo")?
         .json::<GhRepo>()
@@ -250,27 +252,111 @@ async fn mirror_cmd(
 
     let channel_id = *msg.channel_id.as_u64();
 
-    {
+    let seen = {
         let tymap = ctx.data.read().await;
         let conn = tymap.get::<Data<db::Conn>>().expect("Conn uninitialized");
-        if let Err(err) = conn.add_update(repo_id, info.path, channel_id, &message_ids).await {
+        if let Err(err) = conn
+            .add_update(repo_id, info.path, channel_id, &message_ids)
+            .await
+        {
             log::error!("Error storing message group: {}", err);
             anyhow::bail!("Error storing message group");
         }
+        conn.is_seen(repo_id).await
+    };
 
-        match conn.is_seen(repo_id).await {
-            Ok(true) => (),
-            Ok(false) => {
-                msg.reply(ctx, "⚠️  I have never heard from this repo. \
-                    Please contact the author to install the blob-mirror GitHub App \
-                    at https://github.com/apps/blob-mirror for this repo.")
-                    .await?;
-            },
-            Err(err) => {
-                log::error!("Error checking seen status: {:?}", err);
+    match seen {
+        Ok(true) => (),
+        Ok(false) => {
+            let heard = msg
+                .reply(
+                    ctx,
+                    &format!(
+                        "⚠️  I have never heard from this repo ({}/{}). \
+                    Please contact the repo admin to install the blob-mirror GitHub App \
+                    at https://github.com/apps/blob-mirror for this repo.\n\
+                    This message will be deleted when I hear from the repo.",
+                        info.user, info.repo
+                    ),
+                )
+                .await?;
+            msg.react(&ctx, '🙈').await?;
+            {
+                let tymap = ctx.data.read().await;
+                let conn = tymap.get::<Data<db::Conn>>().expect("Conn uninitialized");
+                if let Err(err) = conn
+                    .delete_on_seen(repo_id, *heard.channel_id.as_u64(), *heard.id.as_u64())
+                    .await
+                {
+                    log::error!("Error scheduling seen message deletion: {:?}", err);
+                }
+                if let Err(err) = conn
+                    .dereact_on_seen(repo_id, *msg.channel_id.as_u64(), *msg.id.as_u64())
+                    .await
+                {
+                    log::error!("Error scheduling seen message deletion: {:?}", err);
+                }
             }
         }
+        Err(err) => {
+            log::error!("Error checking seen status: {:?}", err);
+        }
     }
+
+    Ok(())
+}
+
+async fn handle_update(update: db::Update, ctx: Context) -> anyhow::Result<()> {
+    let resp = reqwest::get(&update.url)
+        .await
+        .context("Failed to download file")?;
+    let mut text: String = resp.text().await.context("The file is not valid UTF-8")?;
+
+    let max_len = update.message_ids.len() * MESSAGE_MAX_LENGTH;
+    if max_len < text.len() {
+        let err = format!("\u{2026}\nSee <{}> for more", &update.url);
+        text.truncate(max_len - err.len());
+        text += &err;
+    }
+
+    let channel = ChannelId::from(update.channel_id);
+    for (i, message) in update.message_ids.iter().enumerate() {
+        let range = (MESSAGE_MAX_LENGTH * i)..cmp::min(MESSAGE_MAX_LENGTH * (i + 1), text.len());
+        let slice = text
+            .get(range)
+            .unwrap_or("*(message reserved for expansion)*");
+        let message = MessageId::from(*message);
+        let mut message = channel.message(&ctx, message).await?;
+        message.edit(&ctx, |m| m.content(slice)).await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_on_seen(on_seen: db::OnSeen, ctx: Context) -> anyhow::Result<()> {
+    let ctx = &ctx;
+    let deletions = on_seen.deletions.chunks_exact(2).map(|pair| {
+        let [channel_id, message_id]: [u64; 2] = pair.try_into().expect("chunks_exact(2)");
+        async move {
+            let channel_id = ChannelId::from(channel_id);
+            let message_id = MessageId::from(message_id);
+            if let Ok(message) = channel_id.message(&ctx, message_id).await {
+                let _ = message.delete(&ctx).await; // doesn't matter if we can't delete
+            }
+        }
+    });
+    let dereacts = on_seen.dereacts.chunks_exact(2).map(|pair| {
+        let [channel_id, message_id]: [u64; 2] = pair.try_into().expect("chunks_exact(2)");
+        async move {
+            let channel_id = ChannelId::from(channel_id);
+            let message_id = MessageId::from(message_id);
+            if let Ok(message) = channel_id.message(&ctx, message_id).await {
+                let _ = message.delete_reaction_emoji(&ctx, '🙈').await; // doesn't matter if we can't delete
+            }
+        }
+    });
+
+    future::join(future::join_all(deletions), future::join_all(dereacts)).await;
 
     Ok(())
 }

@@ -1,3 +1,5 @@
+use std::fmt;
+
 use anyhow::Context;
 use futures::future;
 use futures::stream::StreamExt;
@@ -10,12 +12,18 @@ use tokio::sync::mpsc;
 
 use crate::secret::{self, Secret};
 
-pub fn subscriber(secret: &Secret) -> anyhow::Result<mpsc::Receiver<Update>> {
-    async fn read<'t>(tx: &mpsc::Sender<Update>, pubsub: &mut PubsubStream) -> anyhow::Result<()> {
+pub fn subscriber<T>(secret: &Secret, topic: &'static str) -> anyhow::Result<mpsc::Receiver<T>>
+where
+    T: fmt::Debug + Send + Sync + serde::de::DeserializeOwned + 'static,
+{
+    async fn read<'t, T>(tx: &mpsc::Sender<T>, pubsub: &mut PubsubStream) -> anyhow::Result<()>
+    where
+        T: fmt::Debug + Send + Sync + serde::de::DeserializeOwned + 'static,
+    {
         let msg = pubsub.next().await.context("Connection broken")??;
-        let payload: Update = match msg {
-            RespValue::BulkString(bs) => serde_json::from_slice(&bs)?,
-            _ => anyhow::bail!("Incorrect channel data"),
+        let payload: T = match msg {
+            RespValue::SimpleString(bs) => serde_json::from_str(&bs)?,
+            _ => anyhow::bail!("Incorrect pubsub data type"),
         };
         tx.send(payload)
             .await
@@ -23,9 +31,16 @@ pub fn subscriber(secret: &Secret) -> anyhow::Result<mpsc::Receiver<Update>> {
         Ok(())
     }
 
-    async fn main(tx: mpsc::Sender<Update>, secret: secret::Redis) -> anyhow::Result<()> {
+    async fn main<T>(
+        tx: mpsc::Sender<T>,
+        secret: secret::Redis,
+        topic: &'static str,
+    ) -> anyhow::Result<()>
+    where
+        T: fmt::Debug + Send + Sync + serde::de::DeserializeOwned + 'static,
+    {
         let conn = client::pubsub_connect(secret.addr().await?).await?;
-        let mut sub = conn.subscribe("updates").await?;
+        let mut sub = conn.subscribe(topic).await?;
 
         loop {
             if let Err(err) = read(&tx, &mut sub).await {
@@ -36,9 +51,16 @@ pub fn subscriber(secret: &Secret) -> anyhow::Result<mpsc::Receiver<Update>> {
 
     let (tx, rx) = mpsc::channel(16);
 
-    tokio::spawn(main(tx, secret.redis.clone()));
+    tokio::spawn(main(tx, secret.redis.clone(), topic));
 
     Ok(rx)
+}
+
+/// Schema of the `on_seen` pubsub topic
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct OnSeen {
+    pub deletions: Vec<u64>,
+    pub dereacts: Vec<u64>,
 }
 
 /// Schema of the `updates` pubsub topic
@@ -62,6 +84,62 @@ impl Conn {
         })
     }
 
+    pub async fn seen(&self, repo_id: u64) -> anyhow::Result<()> {
+        self.mark_seen(repo_id)
+            .await
+            .context("Error marking seen")?;
+
+        let deletion_strings: Vec<String> = self
+            .conn
+            .send(resp_array![
+                "LRANGE",
+                format!("delete-on-seen:{}", repo_id),
+                "0",
+                "-1"
+            ])
+            .await
+            .context("Failed fetching deletion list")?;
+        let dereact_strings: Vec<String> = self
+            .conn
+            .send(resp_array![
+                "LRANGE",
+                format!("dereact-on-seen:{}", repo_id),
+                "0",
+                "-1"
+            ])
+            .await
+            .context("Failed fetching dereact list")?;
+
+        let mut deletions = Vec::with_capacity(deletion_strings.len());
+        for deletion in deletion_strings {
+            deletions.push(
+                deletion
+                    .parse::<u64>()
+                    .context("Deletion ID is not integer")?,
+            );
+        }
+        let mut dereacts = Vec::with_capacity(dereact_strings.len());
+        for dereact in dereact_strings {
+            dereacts.push(
+                dereact
+                    .parse::<u64>()
+                    .context("Dereact ID is not integer")?,
+            );
+        }
+
+        let on_seen = OnSeen {
+            deletions,
+            dereacts,
+        };
+        let json = serde_json::to_string(&on_seen)?;
+        self.conn
+            .send(resp_array!["PUBLISH", "on_seen", json])
+            .await
+            .context("Failed to publish on_seen")?;
+
+        Ok(())
+    }
+
     pub async fn mark_seen(&self, repo_id: u64) -> anyhow::Result<bool> {
         let changed: bool = self
             .conn
@@ -81,12 +159,25 @@ impl Conn {
     }
 
     pub async fn is_seen(&self, repo_id: u64) -> anyhow::Result<bool> {
-        let found: Vec<bool> = self.conn.send(resp_array!["SMISMEMBER", "seen", repo_id.to_string()]).await
+        let found: Vec<bool> = self
+            .conn
+            .send(resp_array!["SMISMEMBER", "seen", repo_id.to_string()])
+            .await
             .context("Error checking repo seen status")?;
-        Ok(*found.get(0).expect("SMISMEMBER ret count = param count - 1"))
+        Ok(*found
+            .get(0)
+            .expect("SMISMEMBER ret count = param count - 1"))
     }
 
-    pub async fn repo_updates(
+    pub async fn on_repo_update(&self, repo_id: u64, user: &str, repo: &str) -> anyhow::Result<()> {
+        for update in self.repo_updates(repo_id, user, repo).await? {
+            let json = serde_json::to_string(&update)?;
+            self.conn.send(resp_array!["PUBLISH", "updates", json]).await?;
+        }
+        Ok(())
+    }
+
+    async fn repo_updates(
         &self,
         repo_id: u64,
         user: &str,
@@ -193,13 +284,56 @@ impl Conn {
                 .append(message_ids.iter().map(|id| id.to_string())),
         );
         let rev_futures = message_ids.iter().map(|&message_id| async move {
-            let _: String = self.conn.send(resp_array!["SET", format!("mirror-group-rev:{}", message_id), id]).await?;
+            let _: String = self
+                .conn
+                .send(resp_array![
+                    "SET",
+                    format!("mirror-group-rev:{}", message_id),
+                    id
+                ])
+                .await?;
             Ok(())
         });
         let rev_future = future::try_join_all(rev_futures);
         let _: (String, String, usize, _) =
             future::try_join4(path_future, channel_future, messages_future, rev_future).await?;
 
+        Ok(())
+    }
+
+    pub async fn delete_on_seen(
+        &self,
+        repo_id: u64,
+        channel_id: u64,
+        message_id: u64,
+    ) -> anyhow::Result<()> {
+        let _: bool = self
+            .conn
+            .send(resp_array![
+                "RPUSH",
+                format!("delete-on-seen:{}", repo_id),
+                channel_id.to_string(),
+                message_id.to_string(),
+            ])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn dereact_on_seen(
+        &self,
+        repo_id: u64,
+        channel_id: u64,
+        message_id: u64,
+    ) -> anyhow::Result<()> {
+        let _: usize = self
+            .conn
+            .send(resp_array![
+                "RPUSH",
+                format!("dereact-on-seen:{}", repo_id),
+                channel_id.to_string(),
+                message_id.to_string(),
+            ])
+            .await?;
         Ok(())
     }
 }

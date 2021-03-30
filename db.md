@@ -7,3 +7,5 @@ This app uses a Redis database with the following keys:
 - `mirror-group:{random id}:channel`: channel ID of the mirror group
 - `mirror-group:{random id}:messages`: list of discord message IDs corresponding to this group
 - `mirror-group-rev:{message id}`: the random id of the mirror group owning the message id
+- `delete-on-seen:{repo id}`: list of channel + message IDs to delete when `{repo id}` is pinged.
+- `dereact-on-seen:{repo id}`: list of channel + message IDs to remove reactions from when `{repo id}` is pinged.
