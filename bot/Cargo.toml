@@ -1,0 +1,22 @@
+[package]
+name = "bot"
+version = "0.1.0"
+authors = ["SOFe <sofe2038@gmail.com>"]
+edition = "2018"
+license = "AGPL-3.0"
+repository = "https://github.com/SOF3/blob-mirror"
+homepage = "https://github.com/SOF3/blob-mirror"
+readme = "README.md"
+description = "A Discord bot that mirrors a file on GitHub to messages on a Discord channel"
+
+[dependencies]
+anyhow = "1.0.40"
+async-trait = "0.1.48"
+common = {path = "../common"}
+futures = "0.3.13"
+log = "0.4.10"
+pretty_env_logger = "0.4.0"
+reqwest = "0.11.2"
+serde = {version = "1.0.104", features = ["derive"]}
+serenity = {version = "0.10.4", default-features = false, features = ["client", "gateway", "rustls_backend", "model"]}
+tokio = {version = "1.4.0", features = ["rt-multi-thread", "macros"]}

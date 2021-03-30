@@ -1,0 +1,18 @@
+[package]
+name = "web"
+version = "0.1.0"
+authors = ["SOFe <sofe2038@gmail.com>"]
+edition = "2018"
+license = "AGPL-3.0"
+repository = "https://github.com/SOF3/blob-mirror"
+homepage = "https://github.com/SOF3/blob-mirror"
+readme = "README.md"
+description = "A Discord bot that mirrors a file on GitHub to messages on a Discord channel"
+
+[dependencies]
+actix-web = "3.3.2"
+anyhow = "1.0.40"
+common = {path = "../common"}
+log = "0.4.10"
+pretty_env_logger = "0.4.0"
+tokio = {version = "1.4.0", features = ["rt-multi-thread", "macros"]}

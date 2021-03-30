@@ -1,0 +1,15 @@
+version: '2.3'
+services:
+  bot:
+    build:
+      context: .
+      target: bot
+    volumes:
+      - ./secret.toml:/etc/app/secret.toml
+  web:
+    build:
+      context: .
+      target: web
+    volumes:
+      - ./secret.toml:/etc/app/secret.toml
+      - ./key.pem:/etc/app/key.pem
