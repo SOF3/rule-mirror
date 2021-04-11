@@ -2,7 +2,7 @@ use std::fmt;
 
 use anyhow::Context;
 use futures::future;
-use futures::stream::StreamExt;
+use futures::stream::{FuturesUnordered, StreamExt};
 use redis_async::{
     client::{self, pubsub::PubsubStream},
     resp::RespValue,
@@ -84,7 +84,30 @@ impl Conn {
         })
     }
 
-    pub async fn seen(&self, repo_id: u64) -> anyhow::Result<()> {
+    pub async fn seen_bool_multi(
+        &self,
+        repo_ids: impl IntoIterator<Item = u64>,
+        seen: bool,
+    ) -> anyhow::Result<()> {
+        let mut futs = repo_ids
+            .into_iter()
+            .map(|id| self.seen_bool(id, seen))
+            .collect::<FuturesUnordered<_>>();
+        while let Some(ret) = futs.next().await {
+            ret?;
+        }
+        Ok(())
+    }
+
+    pub async fn seen_bool(&self, repo_id: u64, seen: bool) -> anyhow::Result<()> {
+        if seen {
+            self.seen(repo_id).await
+        } else {
+            self.mark_unseen(repo_id).await.map(|_| ())
+        }
+    }
+
+    async fn seen(&self, repo_id: u64) -> anyhow::Result<()> {
         self.mark_seen(repo_id)
             .await
             .context("Error marking seen")?;
@@ -140,7 +163,7 @@ impl Conn {
         Ok(())
     }
 
-    pub async fn mark_seen(&self, repo_id: u64) -> anyhow::Result<bool> {
+    async fn mark_seen(&self, repo_id: u64) -> anyhow::Result<bool> {
         let changed: bool = self
             .conn
             .send(resp_array!["SADD", "seen", repo_id.to_string()])
@@ -149,7 +172,7 @@ impl Conn {
         Ok(changed)
     }
 
-    pub async fn mark_unseen(&self, repo_id: u64) -> anyhow::Result<bool> {
+    async fn mark_unseen(&self, repo_id: u64) -> anyhow::Result<bool> {
         let changed: bool = self
             .conn
             .send(resp_array!["SADD", "seen", repo_id.to_string()])
@@ -172,7 +195,9 @@ impl Conn {
     pub async fn on_repo_update(&self, repo_id: u64, user: &str, repo: &str) -> anyhow::Result<()> {
         for update in self.repo_updates(repo_id, user, repo).await? {
             let json = serde_json::to_string(&update)?;
-            self.conn.send(resp_array!["PUBLISH", "updates", json]).await?;
+            self.conn
+                .send(resp_array!["PUBLISH", "updates", json])
+                .await?;
         }
         Ok(())
     }
