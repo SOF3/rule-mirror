@@ -19,4 +19,4 @@ pretty_env_logger = "0.4.0"
 reqwest = "0.11.3"
 serde = {version = "1.0.104", features = ["derive"]}
 serenity = {version = "0.10.5", default-features = false, features = ["client", "gateway", "rustls_backend", "model"]}
-tokio = {version = "1.4.0", features = ["rt-multi-thread", "macros"]}
+tokio = {version = "1.5.0", features = ["rt-multi-thread", "macros"]}
