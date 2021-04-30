@@ -1,0 +1,32 @@
+version: 2
+updates:
+- package-ecosystem: cargo
+  directory: "/"
+  schedule:
+    interval: daily
+  open-pull-requests-limit: 10
+  ignore:
+  - dependency-name: async-trait
+    versions:
+    - 0.1.49
+  - dependency-name: config
+    versions:
+    - 0.11.0
+  - dependency-name: getset
+    versions:
+    - 0.1.1
+  - dependency-name: serde
+    versions:
+    - 1.0.125
+  - dependency-name: r2d2
+    versions:
+    - 0.8.9
+  - dependency-name: comrak
+    versions:
+    - 0.10.0
+  - dependency-name: log
+    versions:
+    - 0.4.14
+  - dependency-name: diesel
+    versions:
+    - 1.4.6
