@@ -5,11 +5,19 @@ services:
       context: .
       target: bot
     volumes:
-      - ./secret.toml:/etc/app/secret.toml
+      - ./secret.toml:/app/secret.toml
+    links:
+      - redis:redis
   web:
     build:
       context: .
       target: web
     volumes:
-      - ./secret.toml:/etc/app/secret.toml
+      - ./secret.toml:/app/secret.toml
       - ./key.pem:/etc/app/key.pem
+    links:
+      - redis:redis
+    ports:
+      - 8000:8000
+  redis:
+    image: redis:6-alpine

@@ -6,6 +6,7 @@ use anyhow::Context;
 pub struct Secret {
     pub discord: Discord,
     pub github: Github,
+    pub web: Web,
     pub redis: Redis,
 }
 
@@ -23,6 +24,11 @@ pub struct Github {
     pub slug: String,
     pub app_id: u64,
     pub webhook_secret: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct Web {
+    pub port: u16,
 }
 
 #[derive(Clone, serde::Deserialize)]

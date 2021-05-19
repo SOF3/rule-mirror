@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
             )),
     );
 
-    let addr = net::SocketAddr::from(([0, 0, 0, 0], 8000));
+    let addr = net::SocketAddr::from(([0, 0, 0, 0], secret.web.port));
     warp::serve(routes).run(addr).await;
 
     Ok(())
