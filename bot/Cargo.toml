@@ -10,7 +10,7 @@ readme = "README.md"
 description = "A Discord bot that mirrors a file on GitHub to messages on a Discord channel"
 
 [dependencies]
-anyhow = "1.0.41"
+anyhow = "1.0.42"
 async-trait = "0.1.48"
 common = {path = "../common"}
 futures = "0.3.14"
